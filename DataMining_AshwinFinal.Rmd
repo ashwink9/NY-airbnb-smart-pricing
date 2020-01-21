@@ -1,0 +1,620 @@
+---
+title: "Smart Pricing Model of Airbnb NYC Dataset"
+author: "Ashwin Nair"
+date: "13 December 2019"
+output: html_document
+---
+
+#Introduction
+
+## Data
+The project focuses on exploratory data analysis of the vast NYC Airbnb data available from guests and hosts since 2008. The dataset describes the listing activity and metrics in NYC for 2019.For more details regarding the package, please refer to the [Dataset](https://www.kaggle.com/dgomonov/new-york-city-airbnb-open-data).
+
+
+## Goal
+
+The goal is to create a smart pricing model from this dataset. It will help customers understand the influencing factors affecting the price appropriately.Hosts too can base their pricing for their listings based on this model.
+
+How does the the number of reviews, stay duration, availability and neighburhood vary in signficance to the price of the listing.
+
+## Modeling
+
+My target variable is Price and I plan to model it with linear regression and compare the effects of different predictor variables on Price. Number or reviews, availability, duration of stay and the area would be strong predictors.
+
+#Import & Check Data
+
+```{r setup, message=FALSE, warning=FALSE, include=FALSE}
+
+library(tidyverse)
+library(gridExtra)
+library(DataExplorer)
+library(caTools)
+library(plotly)
+
+#Import Dataset
+
+
+nyc <- read.csv("C:/Users/Hp/Desktop/CPS Analytics/Fall 2019/Data mining/Week 2/AB_NYC_2019.csv")
+
+#Import Libraries
+
+
+
+#Checking Dataset Dimension
+nyc %>% dim
+
+#Summarizing
+nyc %>% str
+summary(nyc)
+view(nyc)
+```
+
+**Selecting Variables**
+
+* `id` & `host_id` can be dropped as it doesnt carry any significance in our analysis, however will keep id for counting purposes
+* `Name of the listing` is unique and would be needed for deep dive analytics.
+* `Name of the Airbnb owner` must be repeated in case of multiple listings. Can be grouped later.
+* `Neighborhood & Neighborhood_group` - Categorical variables needed for business question.
+* `Room type` has 3 types
+* `Price` is the target variable 
+* `Min number of nights`, `availability` and `number of reviews` are all be variables used to predict the target variable
+* `Last review` can be dropped
+* `Calculated host/listings` shows the count of listings each host has
+* `Latitude` and `longitude` can be used to construct a heatmap of the price variation across the city
+
+Review/month - All NA assigned to 0. These are rows of listings that havent received any review.
+
+
+```{r, warning=FALSE}
+
+# Dropping the above mentioned two columns
+
+nyc <- nyc %>% 
+  select(-host_id, -last_review)
+
+# Replacing all NA's in reviews/month to 0. Corresponds to all listings with 0 reviews
+
+nyc$reviews_per_month[is.na(nyc$reviews_per_month)] <- 0
+
+nyc %>% summary
+
+
+```
+#Inspect & Transform : Individual variables
+
+## Categorical Variables
+
+```{r}
+# Neighborhood, Neighborhood_group and room-type can be viewed in a tabular format
+
+
+#Neighborhood_Group Inspect
+
+nyc$neighbourhood_group %>% table 
+
+# Categorizing by Room type
+
+nyc$room_type %>% table
+
+#Neighborhood_Group Inspect
+summary(nyc$neighbourhood) %>% head
+
+# Many hosts have multiple listings
+nyc$calculated_host_listings_count %>% unique %>% length
+
+
+
+```
+
+We see that Brooklyn and Manhattan has the most listings , with Williamsburg, Bedford and Harlem being the top areas. Private rooms and Entire homes/ apartments take up the dominant house types in New York
+However, Staten Island and Bronx are underrepresented due to comparitevely less population than the other boroughs.
+
+## Continious Variables
+
+```{r}
+# Price Inspect
+
+hist(nyc$price, main = "Price Distribution", xlim = c(5,1000))
+
+# Availability Inspect
+
+hist(nyc$availability_365, main = "Availibility Distribution")
+
+# No. of reviews Inspect
+
+hist(nyc$number_of_reviews, main = "Reviews Distribution")
+
+# Min. no. of nights Inspect
+
+hist(nyc$minimum_nights, main = "Min number of nights")
+
+
+```
+
+The availibility histogram is broadly spread and price has a mean of $152, with some outliers towards the higher end. 
+
+
+Number of reviews also shows a skewed distribution.
+Minimum number of nights will be transformed into a binary variable, 3 nights and more of stay would be 1. Less than 3 nights would be 0.
+Availability will also be split into a categorical variable indicating popularity, more avilable the listing, less popular.
+
+
+**A log transformation and removal of outliers would look more better for our analysis.**
+
+1. Did a interquartile function on price and number of reviews to remove outliers above the 3rd quartile
+2. Price shows a better result and will need to be logged.
+
+```{r}
+# Removing outliers for Price variable
+
+
+outlier_cutoff <- quantile(nyc$price, 0.75) + 1.5 * IQR(nyc$price)
+index_outlier_ROT <- which(nyc$price > outlier_cutoff)
+nyc <- nyc[-index_outlier_ROT, ]
+
+plot(nyc$price)
+
+
+hist(nyc$price)
+
+```
+
+3. Number of reviews still look skewed and need to be logged
+
+```{r}
+
+#Removing outliers for Number of reviews variable
+outlier_cutoff2 <- quantile(nyc$number_of_reviews, 0.75) + 1.5 * IQR(nyc$number_of_reviews)
+index_outlier_ROT <- which(nyc$number_of_reviews > outlier_cutoff2)
+nyc <- nyc[-index_outlier_ROT, ]
+
+plot(nyc$number_of_reviews)
+
+
+hist(nyc$number_of_reviews)
+
+```
+
+```{r}
+#Fitting the skewed variables by log function
+nyc$logprice = log1p(nyc$price)
+nyc$logreviews = log1p(nyc$number_of_reviews)
+nyc$logavailability = log1p(nyc$availability_365)
+
+```
+
+**Bar plot of neighbourhood group split by the type of home**
+
+Our research delves into most visited neighbourhood boroughs to give a perspective on how our smart pricing would be beneficial for a larger customer base.
+
+Private rooms and entire homes/apartments seem to be frequently booked home type.
+Boorklyn & Manhattan would be the focus of our model
+```{r}
+
+# Plotting neighborhood group wise listings split by apartment type
+ggplot(data = nyc) +
+    geom_bar(mapping = aes(x=room_type, fill=neighbourhood_group),position="dodge")
+
+
+
+
+```
+
+Doing the required transformations on these continious variables
+
+
+Clustering the continious variable into a categorical variable by splitting the availability to show popularity index. Comparing the popularity index with the price.
+
+Converting minimum number of nights into a categorical variable, with more than 3 nights shown as 1 and remaining as 0.
+
+```{r}
+# Determining the popularity index of all listings - analyzing few available days or many available days
+nyc <- nyc %>% mutate(
+  Rarefind = case_when(
+    availability_365 < 75 ~ 'Popular', 
+    availability_365 >= 75 & availability_365 < 250 ~ 'Good',
+    availability_365 >= 250 ~ 'Okay')
+)
+
+ggplot(data = nyc) +
+    geom_bar(mapping = aes(x=Rarefind, fill=mean(price)),position="dodge")
+# Finding mean price for each of these categories 
+nyc %>% select(Rarefind, price) %>% filter(Rarefind == "Popular") %>% summarise(mean = mean(price))
+nyc %>% select(Rarefind, price) %>% filter(Rarefind == "Okay") %>% summarise(mean = mean(price))
+nyc %>% select(Rarefind, price) %>% filter(Rarefind == "Good") %>% summarise(mean = mean(price))
+
+# Creating a binary version of Min number of nights ( Splitting into more than 3 Nights and less than 3 Nights)
+nyc$staytime <- ifelse(nyc$minimum_nights > median(nyc$minimum_nights), 1, 0)
+
+nyc$staytime %>% table
+```
+The bar plot shows the split of listings in the popularity index we created. There seems to be most of the listings that are booked throughout the year and fall into the `Popular` segment(~24000). `Good` and `Okay` has around 8000 listings each.
+Checking mean price for each cluster we created :
+Popular - 116.83
+Okay - 128.24
+Good  - 123.13
+This confirms the trend to show the most booked ones are priced comparitively less than the ones that are available more.
+
+
+## Price & Dependent Variables
+
+```{r, warning=FALSE, message=FALSE}
+#Price Vs Min number of nights
+
+
+g3 <- nyc %>% 
+  ggplot(aes(x=logprice, fill=factor(nyc$staytime))) +
+  geom_density(alpha=0.5) +
+  ggtitle('Grouped density plot: Staytime x Price') +
+  theme(legend.position="bottom")
+g3
+
+
+# Price Vs Availability
+
+g4 <- nyc %>% 
+  ggplot(aes(x=Rarefind, y=logprice, fill=Rarefind)) +
+  geom_boxplot() + 
+  ggtitle('Boxplot: Price x Availability') +
+  theme(legend.position="bottom")
+g4
+
+
+
+a1 <- ggplot(data = nyc, aes(x = logavailability, y = logprice)) + geom_point(stat = "identity")
+a1
+```
+
+**Price relation to Min number of nights**
+
+* We see the price of the listings where customers stay more than 3 nights have a significantly shorter density       curve than the listings where customers stay for less than 3 days. It confirms that customers opt for listings      with slightly lesser average price when they need to stay for a long duration.
+
+* Verifying the above shown relation between popularity (Rarefind variable) and price through a box plot
+
+
+**Price relation to Availability**
+
+The popular listings that are least available have the lowest prices.
+The listings that are most available are the most expensive. 
+
+
+**Price relation to No. of reviews **
+
+The distribution of the number of reviews is highly skewed however we see it. This is because there are lot of listings which only get few reviews and even more listings which get lot of reviews.
+With the reviews Vs availability scatter plot we see no evidence to show any kind of relationship between them.
+`Correlation shows 0.10` 
+
+```{r}
+
+# Price Vs No. of reviews
+
+
+g1 <- nyc %>% ggplot(aes(x=logreviews, y = logprice)) +
+                       geom_point(alpha =0.2) + 
+                       geom_smooth(method = 'lm')+
+                       ggtitle('Scatterplot: number of reviews x Price')
+g1
+
+g2 <- nyc %>% ggplot(aes(x=logreviews, y = logavailability)) +
+                       geom_point(alpha =0.2) + 
+                       geom_smooth(method = 'lm')+
+                       ggtitle('Scatterplot: number of reviews x Availibility')
+g2
+
+print(cor(nyc$logreviews, nyc$availability_365))
+```
+
+**Testing for collinearity**
+
+```{r, warning=FALSE, message=FALSE}
+
+print(cor(nyc$logprice, nyc$logreviews))
+
+print(cor(nyc$logprice, nyc$logavailability))
+
+print(cor(nyc$logprice, nyc$minimum_nights))
+
+
+```
+Neither result showed a value of more than 0.8, so that confirms there is no multi collinearity among these continious variables
+The corrlation coefficient is low and the plot doesnt show a strong pattern. 
+So we shouldnt be concerned with multicollinearity
+Non linearity of this plot can be fixed with transforming the individual variables to have a normal distribution
+
+
+
+
+**Distribution of the new variable 'Rarefind'**
+
+```{r message = F, warning = F}
+
+nyc %>% 
+  ggplot(aes(longitude, latitude)) + 
+  geom_hex() + 
+  scale_fill_gradient(low = 'yellow', high = 'purple', breaks = c(200, 800)) + 
+  labs(x = 'Longitude', y = 'Latitude') + 
+  facet_wrap(~ Rarefind) + 
+  theme(legend.position = 'bottom')
+```
+
+It seems that the the popular listings are confined in a certain part of the NY map. It could be a combination of more listings and expensive rooms.
+
+```{r}
+nyc %>% 
+   
+  arrange(logprice) %>% 
+  ggplot() +
+    geom_point(aes(x = longitude, y = latitude, color = logprice)) +
+    # scale_color_distiller(palette = "Spectral") +
+    scale_colour_gradient(low = "gray87", high = "red") +
+    labs(title = "Price heat map of Airbnb apartments",
+          sep = "",
+         color = "Price") +
+    theme_minimal()
+```
+
+We create a heatmap to detect the price and it shows the most expensive homes that coincides with the above visual.
+
+```{r}
+# Displaying count of listings comparitevely cheaper and more frequently avaialable in each neighbourhood
+nyc %>% select(name, Rarefind, price, neighbourhood_group, neighbourhood) %>%
+  filter(Rarefind == 'Good', price < mean(price)) %>%
+  .$neighbourhood_group %>% table %>% sort
+```
+To further exploration of ideal listings users can browse, I have shown a glimpse of the bouroughs that has listings that could raise interest
+Price factor - Cheap
+Availability - Easy to book
+
+
+# Modeling
+
+
+## Linear Regression Model
+
+```{r}
+
+
+lm1 = lm(formula = logprice ~  nyc$staytime + nyc$latitude + nyc$longitude + logreviews + logavailability + nyc$room_type,
+               data = nyc)
+summary(lm1)
+```
+
+All variables are significant.
+Median residual error is -0.005 and R^2 = 0.519 means the model explains about 52% of the variance of target variable, either of which is not good.
+Residual standard error is at 40% which means the probability of the model having an error of 40%
+
+
+## Interpreting Coefficients
+```{r}
+
+lm1  %>% coefficients %>% exp %>% round(3)
+```
+
+
+
+## Negative Correlation
+**Staytime**
+The odds of price decrease to a listing when a customer stays more than 3 days (Staytime is a binary variable ,>3 days & <3 days minimum stay) is approximately 13%
+
+**Number of reviews**
+The price tends to decrease approximately ~3% for as review increases for the listings
+
+##Room type
+```{r}
+
+nyc %>% select(room_type, logprice) %>% filter(room_type == "Entire home/apt") %>% summarise(mean = mean(logprice))
+
+nyc %>% select(room_type, logprice) %>% filter(room_type == "Private room") %>% summarise(mean = mean(logprice))
+nyc %>% select(room_type, logprice) %>% filter(room_type == "Shared room") %>% summarise(mean = mean(logprice))
+
+
+
+```
+
+What is shown here is that how much significant the room type is to the price.
+This coefficient states that price of shared room and private room is comparetively lower than an entire home/apt. Private room is about 52% lower in cost than an entire home. Shared room shows to be 67% cheaper in price than an entire home.
+
+## Positive Correlation
+
+**Availability**
+Price increases by ~3% when the listing is comparitively more available
+
+
+
+# Evaluating Predictive Performance
+
+
+**Data Splitting**
+
+Training set will be 80% of the original dataset. Listings with price = 0 would not be considered as it would help make our predictive model significantly stronger.
+
+```{r}
+
+set.seed(200)
+
+split = sample.split(nyc$price,SplitRatio = 0.8)
+nyc_train = subset(nyc, split == TRUE)
+nyc_test = subset(nyc, split == FALSE)
+
+
+```
+Now that we have both train and test dataset , we can train a model on the training set and make predictions on the training and test datasets.
+For linear regression ,we just need the predicted value of 'Y' = Price
+
+```{r}
+#Fit model into training data
+
+lm_train <- lm(formula = logprice ~  staytime + logreviews + logavailability + room_type,
+               data = nyc_train)
+summary(lm_train)
+
+```
+
+Median residual standard error is almost the same(-0.04) and R^2 is around 40% is due to all these dependent variables. What we can do is cluster neighbourhoods that we wish to focus and try to derive the most positive impactful predictors. It shows a large residual error at 53% that needs to be looked at.
+
+## Predicting the prices using the above model
+
+### Apply on Train data
+
+```{r}
+#Predicting the train set Results
+
+y_pred = predict(lm_train, newdata = nyc_train)
+y_pred %>% head
+
+predicted_price <- c(y_pred %>% exp %>% round(2))
+head(predicted_price)
+
+```
+Showing the predicted price estimate for listings in the train dataset. This can be used by our hosts with individual properties as well as multiple properties to make a price list and help improve their business through strategic decsion-making
+
+### Applying on Test Data
+```{r}
+#Fit model into test data
+
+lm_test <- lm(formula = logprice ~  staytime + logreviews + logavailability + room_type,
+               data = nyc_test)
+summary(lm_test)
+
+```
+The outcome of the test data seems very similar to the training data. Residual error and R^2 increases to 42% again.
+It kind of concludes that most variation in price is still not explained by the model.
+Residual standard error = 52%
+
+
+```{r}
+#Predicting the test set Results
+
+y_pred2 = predict(lm_test, newdata = nyc_test)
+y_pred2 %>% head
+
+predicted_price2 <- c(y_pred2 %>% exp %>% round(2))
+head(predicted_price2)
+```
+Test data shows rows 7 to 30 and their predicted price estimate.
+
+## Improving Model Performance by Clustering Neighbourhoods:
+
+* Select the top visited and booked neighbourhoods and analyze the price Vs predictor significance to obtain better accuracy
+* Construct a base line price estimate for lsits with more availability to increase chances of a attracting a customer.
+
+```{r}
+
+nyc_main <- nyc %>% 
+  select(logprice,host_name, room_type, neighbourhood_group, neighbourhood, logavailability, logreviews, staytime) %>% 
+  filter(neighbourhood %in% c("Williamsburg",  "Bedford-Stuyvesant", "Harlem",  "Bushwick", "Upper West Side"))
+
+
+# Modeling with linear regression
+
+lm3 = lm(formula = logprice ~ neighbourhood + staytime +  logreviews + logavailability + room_type,
+               data = nyc_main)
+summary(lm3)
+
+```
+
+Median residual error is the same - -0.013
+r^2 increases to 56% which is good and residual standard error is the lowest yet at 37%
+
+Conducting similar linear regression on `nyc_main` dataset that comprises of only the listings from the highest customer base neighbourhoods
+### Applying on Train & Test data
+
+
+**Splitting Data**
+```{r}
+# Fitting model into train dataset
+library(caTools)
+
+set.seed(200)
+
+split = sample.split(nyc_main$logprice,SplitRatio = 0.8)
+nyc_tr = subset(nyc_main, split == TRUE)
+nyc_ts = subset(nyc_main, split == FALSE)
+
+lm_tr <- lm(formula = logprice ~  staytime + logreviews + logavailability + room_type,
+               data = nyc_tr)
+summary(lm_tr)
+
+#Predicting the train set Results
+
+y_pred3 = predict(lm_tr, newdata = nyc_tr)
+y_pred3 %>% head
+
+predicted_price3 <- c(y_pred3 %>% exp %>% round(2))
+head(predicted_price3)
+```
+Median Residual Error = -0.01
+R^2 decreased to 50% for the train dataset.Residual Standard error has dropped to 39% which is good.
+
+Displaying the predicted price for the listings in the dataset.
+
+```{r}
+
+#Fit model into test data
+
+lm_ts <- lm(formula = logprice ~  staytime + logreviews + logavailability + room_type,
+               data = nyc_ts)
+summary(lm_ts)
+
+
+y_pred4 = predict(lm_ts, newdata = nyc_ts)
+y_pred4 %>% head
+
+predicted_price4 <- c(y_pred4 %>% exp %>% round(2))
+head(predicted_price4)
+
+
+```
+There is not an overall difference in the outcome of the test data that suggests a high possibility of explaining the significance of the predictors as compared to the analysis done before.
+Residual standard error = 40% and R^2 = 48%
+
+```{r,message=FALSE, warning=FALSE}
+
+regression_results <- tibble(
+  obs = nyc_tr$logprice,
+  pred = y_pred3,
+  diff = pred - obs,
+  abs_diff = abs(pred - obs),
+  neighbourhood = nyc_tr$neighbourhood,
+  name = nyc_tr$host_name,
+  group = nyc_tr$neighbourhood_group,
+  type = nyc_tr$room_type
+  
+)
+
+regression_plot <- regression_results %>% 
+  ggplot(aes(obs, pred)) +
+geom_point(alpha = 0.1, aes(text = paste("Name:", name, "\nGroup:", group, "\nType:", type,
+                                           "\nPrice diff = ", diff))) +
+  theme() +
+  scale_x_log10() +
+  scale_y_log10() +
+  ggtitle("Observed vs predicted",
+          subtitle = "Linear regression model") + 
+  geom_abline(slope = 1, intercept = 0, color = "blue", linetype = 2)  +
+  facet_wrap(~neighbourhood)
+
+ggplotly(regression_plot)
+
+
+
+```
+
+* All the 5 neighbourhood in focus have been displayed with observed and predicted prices through an interactive dashbaord
+* Detailed description of the property that can be accessed by customers and hosts alike.
+
+
+# Conclusion
+
+* We refined and cleaned the data by dropping functions, replacing null values, removing outliers and converting any continious variable we could into binary or categorical.
+
+* We analyzed neighbourhood boroughs, mean price and assessed the top listings available in each neighbourhood groups and the types of homes they were.
+
+* It would have been better to have more depeer insight into the reviews - positive or negative, although we transformed the continious variables that were skewed to get a more clear learning.
+
+* It is possible to analyze further with host_name and its significant affect on price as one would deem there are hosts who have multiple listings and are popular among the customers, which gives them the power to fix prices as they please.
+
+* We have narrowed down the most influencial predictors running a linear regression model to predict the best prices for any listing that would be ideal based on various factors. There were both positive and negative correlations leading to this and we deduced that minimum number of nights stayed, reviews, availability are strong dependent variables on price.
+
+* Observed Vs Precited pricing shown for NYC Airbnb properties in the top 5 most visited neighbourhoods. 
+
